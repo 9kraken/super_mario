@@ -92,7 +92,6 @@ int main() {
 		
 		// 4. Обновление изображения на экране
 		game_map->refresh();
-		biv::os::set_cursor_start_position();
 		game_map->show();
 		std::this_thread::sleep_for(10ms);
 	} while (

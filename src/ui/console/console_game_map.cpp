@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <iostream>
+#include <windows.h>
+#include <os_control_settings.hpp>
 
 using biv::ConsoleGameMap;
 
@@ -80,7 +82,9 @@ void ConsoleGameMap::remove_objs() {
 }
 
 void ConsoleGameMap::show() const noexcept {
+	biv::os::set_cursor_start_position();
 	for (int i = 0; i < height; i++) {
-		std::cout << map[i];
+		std::cout << map[i] << '\n';
 	}
+	std::cout.flush();
 }
