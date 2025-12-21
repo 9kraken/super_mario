@@ -1,5 +1,6 @@
 target_sources(${PROJECT_NAME}
 	PRIVATE
+		flying_enemy.cpp
 		full_box.cpp
 		enemy.cpp
 		mario.cpp
