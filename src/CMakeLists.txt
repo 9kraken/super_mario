@@ -4,7 +4,13 @@ project(super_mario)
 
 SET(CMAKE_CXX_FLAGS "-finput-charset=utf-8 -fexec-charset=utf-8")
 
-set(SOURCES main.cpp)
+option(USE_QT "Build with Qt UI" OFF)
+
+if(USE_QT)
+    set(SOURCES main_qt.cpp)
+else()
+    set(SOURCES main.cpp)
+endif()
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 

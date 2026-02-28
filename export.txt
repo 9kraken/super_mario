@@ -1,0 +1,2269 @@
+﻿=== src/CMakeLists.txt ===
+<cmake_minimum_required(VERSION 3.2...3.27.5)
+
+project(super_mario)
+
+SET(CMAKE_CXX_FLAGS "-finput-charset=utf-8 -fexec-charset=utf-8")
+
+option(USE_QT "Build with Qt UI" OFF)
+
+if(USE_QT)
+    set(SOURCES main_qt.cpp)
+else()
+    set(SOURCES main.cpp)
+endif()
+
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+add_subdirectory(os_controls)
+add_subdirectory(controller)
+add_subdirectory(levels)
+add_subdirectory(model)
+add_subdirectory(objects)
+add_subdirectory(ui)
+<
+=== / src/CMakeLists.txt ===
+=== src/main.cpp ===
+</**
+	Игровой цикл - это обощённое представление потока событий, происходящих в игре.
+
+	Игровой цикл:
+		1. Установка параметров игры
+		2. Получение пользовательского ввода
+		3. Обновление внутреннего состояния игры
+		4. Обновление изображения на экране
+		5. Проверка того, не окончена ли игра
+
+		*** Если игра не окончена, то возвращаемся в пункт № 2.
+
+		6. Завершение
+*/
+#include <thread>
+
+#include "console_ui_factory.hpp"
+#include "first_level.hpp"
+#include "game.hpp"
+#include "game_level.hpp"
+#include "game_map.hpp"
+#include "mario.hpp"
+#include "os_control_settings.hpp"
+#include "ui_factory.hpp"
+#include "user_input.hpp"
+
+int main() {
+	// 1. Установка параметров игры
+	using namespace std::chrono_literals;
+	biv::os::init_settings();
+	
+	biv::Game game;
+	biv::UIFactory* ui_factory = new biv::ConsoleUIFactory(&game);
+	biv::GameMap* game_map = ui_factory->get_game_map();
+	biv::GameLevel* game_level = new biv::FirstLevel(ui_factory);
+	biv::Mario* mario = ui_factory->get_mario();
+	
+	biv::os::UserInput user_input;
+	do {
+		// 2. Получение пользовательского ввода	
+		user_input = biv::os::get_user_input();
+		switch (user_input) {
+			case biv::os::UserInput::MAP_LEFT:
+				mario->move_map_left();
+				if (!game.check_static_collisions(mario)) {
+					game.move_map_left();
+				}
+				mario->move_map_right();
+				break;
+			case biv::os::UserInput::MAP_RIGHT:
+				mario->move_map_right();
+				if (!game.check_static_collisions(mario)) {
+					game.move_map_right();
+				}
+				mario->move_map_left();
+				break;
+			case biv::os::UserInput::MARIO_JUMP:
+				mario->jump();
+				break;
+			case biv::os::UserInput::EXIT:
+				game.finish();
+				break;
+		}
+		
+		// 3. Обновление внутреннего состояния игры
+		game.move_objs_horizontally();
+		game.check_horizontally_static_collisions();
+		
+		game.move_objs_vertically();
+		game.check_mario_collision();
+		game.check_vertically_static_collisions();
+		
+		if (
+			game_map->is_below_map(mario->get_top())
+			|| !mario->is_active()
+		) {
+			game_level->restart();
+			mario = ui_factory->get_mario();
+			std::this_thread::sleep_for(1000ms);
+		}
+		
+		if (game.is_level_end()) {
+			if (!game_level->is_final()) {
+				game_level = game_level->get_next();
+				mario = ui_factory->get_mario();
+				std::this_thread::sleep_for(1000ms);
+				game.start_level();
+			} else {
+				game.finish();
+			}
+		}
+		
+		// 4. Обновление изображения на экране
+		game_map->refresh();
+		game_map->show();
+		std::this_thread::sleep_for(10ms);
+	} while (
+		/* 5. Проверка того, не окончена ли игра */ 
+		!game.is_finished()
+	);
+	
+	// 6. Завершение
+	
+}
+<
+=== / src/main.cpp ===
+=== src/main_qt.cpp ===
+<int main(int argc, char** argv) {
+    return 0;
+}
+<
+=== / src/main_qt.cpp ===
+=== src/controller/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		game.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/controller/CMakeLists.txt ===
+=== src/controller/game.cpp ===
+<#include "game.hpp"
+
+#include <algorithm>
+
+using biv::Game;
+
+Game::Game() {}
+
+void Game::add_collisionable(Collisionable* obj) {
+	collisionable_objs.push_back(obj);
+}
+
+void Game::add_map_movable(MapMovable* obj) {
+	map_movable_objs.push_back(obj);
+}
+
+void Game::add_mario(Mario* obj) {
+	mario = obj;
+}
+
+void Game::add_movable(Movable* obj) {
+	movable_objs.push_back(obj);
+}
+
+void Game::add_static_obj(Rect* obj) {
+	static_objs.push_back(obj);
+}
+
+void Game::check_horizontally_static_collisions() noexcept {
+	for (Collisionable* obj: collisionable_objs) {
+		for (Rect* static_obj: static_objs) {
+			if (obj->has_collision(static_obj)) {
+				obj->process_horizontal_static_collision(static_obj);
+				break;
+			}
+		}
+	}
+}
+
+void Game::check_mario_collision() {
+	for (int i = 0; i < collisionable_objs.size(); i++) {
+		Collisionable* obj = collisionable_objs[i];
+		if (obj->has_collision(mario)) {
+			obj->process_mario_collision(mario);
+			if (!mario->is_active()) {
+				break;
+			} else if (!obj->is_active()) {
+				// TODO
+				collisionable_objs[i] = collisionable_objs.back();
+				collisionable_objs.pop_back();
+				i--;
+			}
+		}
+	}
+}
+
+bool Game::check_static_collisions(Collisionable* obj) const noexcept {
+	for (Rect* static_obj: static_objs) {
+		if (obj->has_collision(static_obj)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void Game::check_vertically_static_collisions() noexcept {
+	if (mario->has_collision(static_objs[static_objs.size() - 1])) {
+		is_level_end_ = true;
+	}
+	
+	for (Collisionable* obj: collisionable_objs) {
+		for (Rect* static_obj: static_objs) {
+			if (obj->has_collision(static_obj)) {
+				obj->process_vertical_static_collision(static_obj);
+				break;
+			}
+		}
+	}
+}
+
+void Game::finish() noexcept {
+	is_finished_ = true;
+}
+
+bool Game::is_finished() const noexcept {
+	return is_finished_;
+}
+
+bool Game::is_level_end() const noexcept {
+	return is_level_end_;
+}
+
+void Game::move_map_left() noexcept {
+	for (MapMovable* obj: map_movable_objs) {
+		obj->move_map_left();
+	}
+}
+
+void Game::move_map_right() noexcept {
+	for (MapMovable* obj: map_movable_objs) {
+		obj->move_map_right();
+	}
+}
+
+void Game::move_objs_horizontally() noexcept {
+	for (Movable* obj: movable_objs) {
+		obj->move_horizontally();
+	}
+}
+
+void Game::move_objs_vertically() noexcept {
+	for (Movable* obj: movable_objs) {
+		obj->move_vertically();
+	}
+}
+
+void Game::remove_collisionable(Collisionable* obj) {
+	remove_obj(collisionable_objs, obj);
+}
+
+void Game::remove_map_movable(MapMovable* obj) {
+	remove_obj(map_movable_objs, obj);
+}
+
+void Game::remove_mario() noexcept {
+	mario = nullptr;
+}
+
+void Game::remove_movable(Movable* obj) {
+	remove_obj(movable_objs, obj);
+}
+
+void Game::remove_objs() {
+	collisionable_objs.clear();
+	map_movable_objs.clear();
+	movable_objs.clear();
+	static_objs.clear();
+	remove_mario();
+}
+
+void Game::remove_static_obj(Rect* obj) {
+	remove_obj(static_objs, obj);
+}
+
+void Game::start_level() noexcept {
+	is_level_end_ = false;
+}
+
+// ----------------------------------------------------------------------------
+// 									PRIVATE
+// ----------------------------------------------------------------------------
+template<class T>
+void Game::remove_obj(std::vector<T*>& container, T* obj) {
+	container.erase(
+		std::remove(
+			container.begin(), container.end(), obj
+		), 
+		container.end()
+	);
+}
+<
+=== / src/controller/game.cpp ===
+=== src/controller/game.hpp ===
+<#pragma once
+
+#include <vector>
+
+#include "collisionable.hpp"
+#include "map_movable.hpp"
+#include "mario.hpp"
+#include "movable.hpp"
+#include "rect.hpp"
+
+namespace biv {
+	class Game {
+		private:
+			std::vector<MapMovable*> map_movable_objs;
+			std::vector<Rect*> static_objs;
+			std::vector<Collisionable*> collisionable_objs;
+			std::vector<Movable*> movable_objs;
+			
+			Mario* mario = nullptr;
+			
+			bool is_finished_ = false;
+			bool is_level_end_ = false;
+			
+		public:
+			Game();
+			
+			void add_collisionable(Collisionable*);
+			void add_map_movable(MapMovable*);
+			void add_mario(Mario*);
+			void add_movable(Movable*);
+			void add_static_obj(Rect*);
+			
+			void check_horizontally_static_collisions() noexcept;
+			void check_mario_collision();
+			bool check_static_collisions(Collisionable* obj) const noexcept;
+			void check_vertically_static_collisions() noexcept;
+			
+			void finish() noexcept;
+			
+			bool is_finished() const noexcept;
+			bool is_level_end() const noexcept;
+			
+			void move_map_left() noexcept;
+			void move_map_right() noexcept;
+			void move_objs_horizontally() noexcept;
+			void move_objs_vertically() noexcept;
+			
+			void remove_collisionable(Collisionable*);
+			void remove_map_movable(MapMovable*);
+			void remove_mario() noexcept;
+			void remove_movable(Movable*);
+			void remove_objs();
+			void remove_static_obj(Rect*);
+			
+			void start_level() noexcept;
+
+		private:
+			template<class T>
+			void remove_obj(std::vector<T*>& container, T* obj);
+	};
+}
+<
+=== / src/controller/game.hpp ===
+=== src/levels/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		first_level.cpp
+		game_level.cpp
+		second_level.cpp
+		third_level.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/levels/CMakeLists.txt ===
+=== src/levels/first_level.cpp ===
+<#include "first_level.hpp"
+
+#include "second_level.hpp"
+
+using biv::FirstLevel;
+
+FirstLevel::FirstLevel(UIFactory* ui_factory) : GameLevel(ui_factory) {
+	init_data();
+}
+
+biv::GameLevel* FirstLevel::get_next() {
+	if (!next) {
+		clear_data();
+		next = new biv::SecondLevel(ui_factory);
+	}
+	return next;
+}
+
+// ----------------------------------------------------------------------------
+// 									PROTECTED
+// ----------------------------------------------------------------------------
+void FirstLevel::init_data() {
+	ui_factory->create_mario({20, 10}, 3, 3);
+	
+	ui_factory->create_ship({20, 20}, 40, 5);
+	
+	ui_factory->create_full_box({30, 10}, 5, 3);
+	ui_factory->create_full_box({50, 10}, 5, 3);
+	
+	ui_factory->create_ship({60, 15}, 40, 10);
+	
+	ui_factory->create_box({60, 5}, 10, 3);
+	ui_factory->create_full_box({70, 5}, 5, 3);
+	ui_factory->create_box({75, 5}, 5, 3);
+	ui_factory->create_full_box({80, 5}, 5, 3);
+	ui_factory->create_box({85, 5}, 10, 3);
+	
+	ui_factory->create_ship({100, 20}, 20, 5);
+	ui_factory->create_ship({120, 15}, 10, 10);
+	ui_factory->create_ship({150, 15}, 10, 10);
+	ui_factory->create_ship({180, 15}, 10, 10);
+
+	ui_factory->create_flying_enemy({150, 9}, 3, 2);
+	ui_factory->create_jumping_enemy({105, 18}, 3, 2);
+	
+	ui_factory->create_enemy({45, 10}, 3, 2);
+	ui_factory->create_enemy({80, 10}, 3, 2);
+}
+<
+=== / src/levels/first_level.cpp ===
+=== src/levels/first_level.hpp ===
+<#pragma once
+
+#include "game_level.hpp"
+
+namespace biv {
+	class FirstLevel : public GameLevel {
+		public:
+			FirstLevel(UIFactory* ui_factory);
+			
+			GameLevel* get_next() override;
+			
+		private:
+			void init_data() override;
+	};
+}
+<
+=== / src/levels/first_level.hpp ===
+=== src/levels/game_level.cpp ===
+<#include "game_level.hpp"
+
+using biv::GameLevel;
+
+GameLevel::GameLevel(UIFactory* ui_factory) : ui_factory(ui_factory) {}
+
+void GameLevel::restart() {
+	clear_data();
+	init_data();
+}
+
+bool GameLevel::is_final() const noexcept {
+	return false;
+}
+
+// ----------------------------------------------------------------------------
+// 									PROTECTED
+// ----------------------------------------------------------------------------
+void GameLevel::clear_data() {
+	ui_factory->clear_data();
+}
+<
+=== / src/levels/game_level.cpp ===
+=== src/levels/game_level.hpp ===
+<#pragma once
+
+/**
+	Вопрос № ххх 
+	
+	На какую структуру данных похож класс GameLevel?
+	В чём это выражается?
+	
+	Можно ли создавать экземпляры класса GameLevel и почему?
+	
+	В чём недостатки конструкции GameLevel?
+*/
+
+#include <cstddef>
+
+#include "ui_factory.hpp"
+
+namespace biv {
+	class GameLevel {
+		protected:
+			UIFactory* ui_factory = nullptr;
+			
+			GameLevel* parent = nullptr;
+			GameLevel* next = nullptr;
+
+		protected:
+			GameLevel(UIFactory*);
+
+		public:
+			virtual void restart();
+			virtual bool is_final() const noexcept;
+
+			virtual GameLevel* get_next() = 0;
+
+		protected:
+			void clear_data();
+
+			virtual void init_data() = 0;
+	};
+}
+<
+=== / src/levels/game_level.hpp ===
+=== src/levels/second_level.cpp ===
+<#include "second_level.hpp"
+
+#include "third_level.hpp"
+
+using biv::SecondLevel;
+
+SecondLevel::SecondLevel(UIFactory* ui_factory) : GameLevel(ui_factory) {
+	init_data();
+}
+
+bool SecondLevel::is_final() const noexcept {
+	return false;
+}
+
+biv::GameLevel* SecondLevel::get_next() {
+	if (!next) {
+		clear_data();
+		next = new biv::ThirdLevel(ui_factory);
+	}
+	return next;
+}
+
+// ----------------------------------------------------------------------------
+// 									PROTECTED
+// ----------------------------------------------------------------------------
+void SecondLevel::init_data() {
+	ui_factory->create_mario({20, 10}, 3, 3);
+	
+	ui_factory->create_ship({20, 20}, 40, 5);
+	ui_factory->create_ship({60, 15}, 10, 10);
+	ui_factory->create_ship({80, 20}, 20, 5);
+	ui_factory->create_ship({120, 15}, 10, 10);
+	ui_factory->create_ship({150, 20}, 40, 5);
+	ui_factory->create_ship({210, 15}, 10, 10);
+	
+	ui_factory->create_enemy({45, 10}, 3, 2);
+	ui_factory->create_enemy({80, 10}, 3, 2);
+	ui_factory->create_enemy({65, 10}, 3, 2);
+	ui_factory->create_enemy({120, 10}, 3, 2);
+	ui_factory->create_enemy({160, 10}, 3, 2);
+	ui_factory->create_enemy({175, 10}, 3, 2);
+}
+<
+=== / src/levels/second_level.cpp ===
+=== src/levels/second_level.hpp ===
+<#pragma once
+
+#include "game_level.hpp"
+
+namespace biv {
+	class SecondLevel : public GameLevel {
+		public:
+			SecondLevel(UIFactory* ui_factory);
+			
+			GameLevel* get_next() override;
+			bool is_final() const noexcept override;
+			
+		private:
+			void init_data() override;
+	};
+}
+<
+=== / src/levels/second_level.hpp ===
+=== src/levels/third_level.cpp ===
+<#include "third_level.hpp"
+
+using biv::ThirdLevel;
+
+ThirdLevel::ThirdLevel(UIFactory* ui_factory) : GameLevel(ui_factory) {
+	init_data();
+}
+
+bool ThirdLevel::is_final() const noexcept {
+	return true;
+}
+
+biv::GameLevel* ThirdLevel::get_next() {
+	return next;
+}
+
+// ----------------------------------------------------------------------------
+// 									PROTECTED
+// ----------------------------------------------------------------------------
+void ThirdLevel::init_data() {
+	ui_factory->create_mario({20, 10}, 3, 3);
+	
+	ui_factory->create_ship({20, 20}, 40, 5);
+	ui_factory->create_ship({80, 20}, 15, 5);
+	ui_factory->create_ship({110, 15}, 15, 10);
+	ui_factory->create_ship({140, 10}, 15, 15);
+	
+	ui_factory->create_enemy({25, 10}, 3, 2);
+	ui_factory->create_enemy({50, 10}, 3, 2);
+	ui_factory->create_enemy({80, 10}, 3, 2);
+	ui_factory->create_enemy({90, 10}, 3, 2);
+	ui_factory->create_enemy({120, 10}, 3, 2);
+}
+<
+=== / src/levels/third_level.cpp ===
+=== src/levels/third_level.hpp ===
+<#pragma once
+
+#include "game_level.hpp"
+
+namespace biv {
+	class ThirdLevel: public GameLevel {
+		public:
+			ThirdLevel(UIFactory* ui_factory);
+			
+			GameLevel* get_next() override;
+			bool is_final() const noexcept override;
+			
+		private:
+			void init_data() override;
+	};
+}<
+=== / src/levels/third_level.hpp ===
+=== src/model/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		collisionable.cpp
+		game_map.cpp
+		movable.cpp
+		rect.cpp
+		rect_map_movable_adapter.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/model/CMakeLists.txt ===
+=== src/model/collisionable.cpp ===
+<#include "collisionable.hpp"
+
+using biv::Collisionable;
+
+bool Collisionable::has_collision(Rect* obj) const noexcept {
+	Rect myself = get_rect();
+	return (
+		myself.get_right() > obj->get_left() &&
+		myself.get_left() < obj->get_right() && 
+		myself.get_bottom() > obj->get_top() && 
+		myself.get_top() < obj->get_bottom()
+	);
+}
+
+bool Collisionable::is_active() const noexcept {
+	return is_active_;
+}
+
+void Collisionable::kill() noexcept {
+	is_active_ = false;
+}
+<
+=== / src/model/collisionable.cpp ===
+=== src/model/collisionable.hpp ===
+<#pragma once
+
+#include "rect.hpp"
+#include "speed.hpp"
+
+namespace biv {
+	class Collisionable {
+		protected:
+			bool is_active_ = true;
+
+		public:
+			bool has_collision(Rect*) const noexcept;
+			bool is_active() const noexcept;
+			void kill() noexcept;
+
+			virtual Rect get_rect() const noexcept = 0;
+			virtual Speed get_speed() const noexcept = 0;
+
+			virtual void process_horizontal_static_collision(Rect*) noexcept = 0;
+			virtual void process_mario_collision(Collisionable*) noexcept = 0;
+			virtual void process_vertical_static_collision(Rect*) noexcept = 0;
+	};
+}
+<
+=== / src/model/collisionable.hpp ===
+=== src/model/coord.hpp ===
+<#pragma once
+
+namespace biv {
+	struct Coord {
+		float x;
+		float y;
+	};
+}
+<
+=== / src/model/coord.hpp ===
+=== src/model/game_map.cpp ===
+<#include "game_map.hpp"
+
+using biv::GameMap;
+
+GameMap::GameMap(const int height, const int width) 
+	: height(height), width(width) {}
+
+bool GameMap::is_below_map(const int y) const noexcept {
+	return y > height;
+}
+		
+bool GameMap::is_on_map(const int x, const int y) const noexcept {
+	return x >=0 && x < width && y >= 0 && y < height;
+}
+<
+=== / src/model/game_map.cpp ===
+=== src/model/game_map.hpp ===
+<#pragma once
+
+namespace biv {
+	class GameMap {
+		protected:
+			const int height;
+			const int width;
+			
+		protected:
+			GameMap(const int height, const int width);
+		
+		public:
+			bool is_below_map(const int y) const noexcept;
+			bool is_on_map(const int x, const int y) const noexcept;
+			
+			virtual void clear() noexcept = 0;
+			virtual void refresh() noexcept = 0;
+			virtual void remove_objs() = 0;
+			virtual void show() const noexcept = 0;
+	};
+}
+<
+=== / src/model/game_map.hpp ===
+=== src/model/map_movable.hpp ===
+<#pragma once
+
+namespace biv {
+	class MapMovable {
+		public: 
+			static const int MAP_STEP = 1;
+
+		public:
+			virtual void move_map_left() noexcept = 0;
+			virtual void move_map_right() noexcept = 0;
+	};
+}
+<
+=== / src/model/map_movable.hpp ===
+=== src/model/movable.cpp ===
+<#include "movable.hpp"
+
+using biv::Movable;
+
+Movable::Movable(
+	const Coord& top_left, 
+	const int width, const int height, 
+	const float vspeed, const float hspeed
+) {
+	this->top_left = top_left;
+	this->width = width;
+	this->height = height;
+	this->vspeed = vspeed;
+	this->hspeed = hspeed;
+}
+
+float Movable::get_vspeed() const noexcept {
+	return vspeed;
+}
+
+void Movable::jump() noexcept {
+	if (vspeed == 0) {
+		vspeed = JUMP_SPEED;
+	}
+}
+
+void Movable::move_horizontal_offset(const float offset) noexcept {
+	top_left.x += offset;
+}
+
+void Movable::move_vertical_offset(const float offset) noexcept {
+	top_left.y += offset;
+}
+
+// ----------------------------------------------------------------------------
+// 									VIRTUAL
+// ----------------------------------------------------------------------------
+void Movable::move_horizontally() noexcept {
+	top_left.x += hspeed;
+}
+
+void Movable::move_vertically() noexcept {
+	if (vspeed < MAX_V_SPEED) {
+		vspeed += V_ACCELERATION;
+	}
+	top_left.y += vspeed;
+}
+<
+=== / src/model/movable.cpp ===
+=== src/model/movable.hpp ===
+<#pragma once
+
+#include "rect.hpp"
+
+namespace biv {
+	class Movable : virtual public Rect {
+		protected:
+			static constexpr float JUMP_SPEED = -1.0f;
+			static constexpr float MAX_V_SPEED = 0.98f;
+			static constexpr float V_ACCELERATION = 0.05f;
+
+			float vspeed = 0;
+			float hspeed = 0;
+
+		protected:
+			Movable() = default;
+			Movable(
+				const Coord& top_left, 
+				const int width, const int height, 
+				const float vspeed, const float hspeed
+			);
+
+		public:
+			float get_vspeed() const noexcept;
+			void jump() noexcept;
+			void move_horizontal_offset(const float offset) noexcept;
+			void move_vertical_offset(const float offset) noexcept;
+			
+			virtual void move_horizontally() noexcept;
+			virtual void move_vertically() noexcept;
+	};
+}
+<
+=== / src/model/movable.hpp ===
+=== src/model/rect.cpp ===
+<#include "rect.hpp"
+
+#include <cmath>
+
+using biv::Rect;
+
+Rect::Rect(const Coord& top_left, const int width, const int height)
+	: top_left(top_left), width(width), height(height) {}
+
+int Rect::get_bottom() const noexcept {
+	return std::round(top_left.y + height);
+}
+
+int Rect::get_height() const noexcept {
+	return height;
+}
+
+int Rect::get_left() const noexcept {
+	return std::round(top_left.x);
+}
+
+int Rect::get_right() const noexcept {
+	return std::round(top_left.x + width);
+}
+
+int Rect::get_top() const noexcept {
+	return std::round(top_left.y);
+}
+
+float Rect::get_x() const noexcept {
+	return top_left.x;
+}
+
+float Rect::get_y() const noexcept {
+	return top_left.y;
+}
+<
+=== / src/model/rect.cpp ===
+=== src/model/rect.hpp ===
+<#pragma once
+
+#include "coord.hpp"
+
+namespace biv {
+	class Rect {
+		protected:
+			Coord top_left;
+			int width;
+			int height;
+
+		public:
+			Rect() = default;
+			Rect(const Coord& top_left, const int width, const int height);
+
+			int get_bottom() const noexcept;
+			int get_height() const noexcept;
+			int get_left() const noexcept;
+			int get_right() const noexcept;
+			int get_top() const noexcept;
+			float get_x() const noexcept;
+			float get_y() const noexcept;
+	};
+}
+<
+=== / src/model/rect.hpp ===
+=== src/model/rect_map_movable_adapter.cpp ===
+<#include "rect_map_movable_adapter.hpp"
+
+using biv::RectMapMovableAdapter;
+
+RectMapMovableAdapter::RectMapMovableAdapter(
+	const Coord& top_left, const int width, const int height) {
+	this->top_left = top_left;
+	this->width = width;
+	this->height = height;
+}
+
+void RectMapMovableAdapter::move_map_left() noexcept {
+	top_left.x -= MapMovable::MAP_STEP;
+}
+
+void RectMapMovableAdapter::move_map_right() noexcept {
+	top_left.x += MapMovable::MAP_STEP;
+}
+<
+=== / src/model/rect_map_movable_adapter.cpp ===
+=== src/model/rect_map_movable_adapter.hpp ===
+<#pragma once
+
+#include "map_movable.hpp"
+#include "rect.hpp"
+
+namespace biv {
+	class RectMapMovableAdapter : virtual public Rect, public MapMovable {
+		public:
+			RectMapMovableAdapter(const Coord& top_left, const int width, const int height);
+			
+			void move_map_left() noexcept override;
+			void move_map_right() noexcept override;
+	};
+}
+<
+=== / src/model/rect_map_movable_adapter.hpp ===
+=== src/model/speed.hpp ===
+<#pragma once
+
+namespace biv {
+	struct Speed {
+		float v;
+		float h;
+	};
+}
+<
+=== / src/model/speed.hpp ===
+=== src/model/ui_factory.hpp ===
+<#pragma once
+
+#include "game.hpp"
+#include "game_map.hpp"
+#include "mario.hpp"
+
+namespace biv {
+	class UIFactory {
+		protected:
+			Game* game = nullptr;
+			
+		protected:
+			UIFactory(Game* game) : game(game) {}
+
+		public:
+			virtual void clear_data() = 0;
+			virtual void create_box(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_enemy(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_flying_enemy(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_full_box(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_jumping_enemy(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_mario(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_money(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual void create_ship(
+				const Coord& top_left, const int width, const int height) = 0;
+			virtual GameMap* get_game_map() = 0;
+			virtual Mario* get_mario() = 0;
+			
+		protected:
+			virtual void create_game_map() = 0;
+	};
+}
+<
+=== / src/model/ui_factory.hpp ===
+=== src/objects/box.hpp ===
+<#pragma once
+
+#include "rect_map_movable_adapter.hpp"
+
+namespace biv {
+	class Box : public RectMapMovableAdapter {
+		public:
+			Box(
+				const Coord& top_left, const int width, const int height
+			) : RectMapMovableAdapter(top_left, width, height) {}
+	};
+}
+<
+=== / src/objects/box.hpp ===
+=== src/objects/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		enemy.cpp
+		flying_enemy.cpp
+		full_box.cpp
+		jumping_enemy.cpp
+		mario.cpp
+		money.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/objects/CMakeLists.txt ===
+=== src/objects/enemy.cpp ===
+<#include "enemy.hpp"
+
+#include "map_movable.hpp"
+
+using biv::Enemy;
+
+Enemy::Enemy(const Coord& top_left, const int width, const int height) 
+	: RectMapMovableAdapter(top_left, width, height) {
+	vspeed = 0;
+	hspeed = 0.2;
+}
+
+biv::Rect Enemy::get_rect() const noexcept {
+	return {top_left, width, height};
+}
+
+biv::Speed Enemy::get_speed() const noexcept {
+	return {vspeed, hspeed};
+}
+
+void Enemy::process_horizontal_static_collision(Rect* obj) noexcept {
+	hspeed = -hspeed;
+	move_horizontally();
+}
+
+void Enemy::process_mario_collision(Collisionable* mario) noexcept {
+	if (mario->get_speed().v > 0 && mario->get_speed().v != V_ACCELERATION) {
+		kill();
+	} else {
+		mario->kill();
+	}
+}
+
+void Enemy::process_vertical_static_collision(Rect* obj) noexcept {
+	// Проверка: не свалился ли враг с корабля. 
+	// Т.е., если он на краю, то он должен разверуться 
+	// и побежать в обратную сторону.
+	top_left.x += hspeed;
+	if (!has_collision(obj)) {
+		process_horizontal_static_collision(obj);
+	} else {
+		top_left.x -= hspeed;
+	}
+	
+	// Особенность модели вертикального передвижения в игре.
+	if (vspeed > 0) {
+		top_left.y -= vspeed;
+		vspeed = 0;
+	}
+}
+<
+=== / src/objects/enemy.cpp ===
+=== src/objects/enemy.hpp ===
+<#pragma once
+
+#include "collisionable.hpp"
+#include "movable.hpp"
+#include "rect.hpp"
+#include "rect_map_movable_adapter.hpp"
+#include "speed.hpp"
+
+namespace biv {
+	class Enemy : public RectMapMovableAdapter, public Movable, public Collisionable {
+		public:
+			Enemy(const Coord& top_left, const int width, const int height);
+
+			Rect get_rect() const noexcept override;
+			Speed get_speed() const noexcept override;
+
+			void process_horizontal_static_collision(Rect*) noexcept override;
+			void process_mario_collision(Collisionable*) noexcept override;
+			void process_vertical_static_collision(Rect*) noexcept override;
+	};
+}
+<
+=== / src/objects/enemy.hpp ===
+=== src/objects/flying_enemy.cpp ===
+<#include "flying_enemy.hpp"
+
+#include <algorithm>
+
+using biv::FlyingEnemy;
+
+FlyingEnemy::FlyingEnemy(
+	const Coord& top_left, 
+	const int width, 
+	const int height, 
+	const float y_range, 
+	const float x_range
+) : Enemy(top_left, width, height),
+	  y_range(y_range),
+	  x_range(x_range)
+{
+	vspeed = -0.25f;
+	hspeed = 0.15f;
+}
+
+void FlyingEnemy::move_horizontally() noexcept {
+	top_left.x += hspeed;
+	moved_x += hspeed;
+
+	if (std::abs(moved_x) >= x_range) {
+		hspeed = -hspeed;
+	}
+}
+
+void FlyingEnemy::move_vertically() noexcept {
+	top_left.y += vspeed;
+	moved_y += vspeed;
+
+	if (std::abs(moved_y) >= y_range) {
+		vspeed = -vspeed;
+	}
+}
+
+void FlyingEnemy::process_vertical_static_collision(Rect* ) noexcept {
+	top_left.y -= vspeed;
+	vspeed = -vspeed;
+}<
+=== / src/objects/flying_enemy.cpp ===
+=== src/objects/flying_enemy.hpp ===
+<#pragma once
+
+#include "enemy.hpp"
+
+namespace biv {
+	class FlyingEnemy : public Enemy {
+		private:
+			float moved_y = 0.0f;
+			float y_range;
+
+			float moved_x = 0.0f;
+			float x_range;
+
+		public:
+			FlyingEnemy(
+				const Coord& top_left, const int width, const int height,
+				const float y_range = 3.0f, const float x_range = 10.0f
+			);
+
+			void move_horizontally() noexcept override;
+			void move_vertically() noexcept override;
+			void process_vertical_static_collision(Rect*) noexcept override;
+	};
+}<
+=== / src/objects/flying_enemy.hpp ===
+=== src/objects/full_box.cpp ===
+<#include "full_box.hpp"
+
+using biv::FullBox;
+
+FullBox::FullBox(
+	const Coord& top_left, 
+	const int width, const int height,
+	UIFactory* ui_factory
+) : Box(top_left, width, height), ui_factory(ui_factory) {}
+
+biv::Rect FullBox::get_rect() const noexcept {
+	return {top_left, width, height};
+}
+
+biv::Speed FullBox::get_speed() const noexcept {
+	return {0, 0};
+}
+
+void FullBox::process_horizontal_static_collision(Rect* obj) noexcept {}
+
+void FullBox::process_mario_collision(Collisionable* mario) noexcept {
+	if (mario->get_speed().v < 0) {
+		kill();
+		ui_factory->create_money({top_left.x, top_left.y - 3}, 3, 2);
+	}
+}
+
+void FullBox::process_vertical_static_collision(Rect* obj) noexcept {}
+<
+=== / src/objects/full_box.cpp ===
+=== src/objects/full_box.hpp ===
+<#pragma once
+
+#include "box.hpp"
+#include "collisionable.hpp"
+#include "ui_factory.hpp"
+
+namespace biv {
+	class FullBox : public Box, public Collisionable {
+		protected:
+			UIFactory* ui_factory;
+
+		public:
+			FullBox(
+				const Coord& top_left, 
+				const int width, const int height,
+				UIFactory* ui_factory
+			);
+			
+			Rect get_rect() const noexcept override;
+			Speed get_speed() const noexcept override;
+			
+			void process_horizontal_static_collision(Rect*) noexcept override;
+			void process_mario_collision(Collisionable*) noexcept override;
+			void process_vertical_static_collision(Rect*) noexcept override;
+	};
+}
+<
+=== / src/objects/full_box.hpp ===
+=== src/objects/jumping_enemy.cpp ===
+<#include "jumping_enemy.hpp"
+
+#include <algorithm>
+
+using biv::JumpingEnemy;
+
+JumpingEnemy::JumpingEnemy(
+	const Coord& top_left, 
+	const int width, 
+	const int height
+) : Enemy(top_left, width, height) {
+	vspeed = 0.0f;
+	hspeed = -0.15f;
+}
+
+void JumpingEnemy::move_vertically() noexcept {
+    if (is_on_ground) {
+        jump();
+        is_on_ground = false;
+    }
+    Movable::move_vertically();
+}
+
+void JumpingEnemy::process_vertical_static_collision(Rect* obj) noexcept {
+	Enemy::process_vertical_static_collision(obj);
+    is_on_ground = true;
+}<
+=== / src/objects/jumping_enemy.cpp ===
+=== src/objects/jumping_enemy.hpp ===
+<#pragma once
+
+#include "enemy.hpp"
+
+namespace biv {
+	class JumpingEnemy : public Enemy {
+		private:
+			bool is_on_ground = false;
+
+		public:
+			JumpingEnemy(
+				const Coord& top_left, const int width, const int height
+            );
+
+			void move_vertically() noexcept override;
+			void process_vertical_static_collision(Rect*) noexcept override;
+	};
+}<
+=== / src/objects/jumping_enemy.hpp ===
+=== src/objects/mario.cpp ===
+<#include "mario.hpp"
+
+#include "map_movable.hpp"
+
+using biv::Mario;
+
+Mario::Mario(const Coord& top_left, const int width, const int height) 
+	: Movable(top_left, width, height, 0, 0) {}
+
+biv::Rect Mario::get_rect() const noexcept {
+	return {top_left, width, height};
+}
+
+biv::Speed Mario::get_speed() const noexcept {
+	return {vspeed, hspeed};
+}
+
+void Mario::move_map_left() noexcept {
+	move_horizontal_offset(biv::MapMovable::MAP_STEP);
+}
+
+void Mario::move_map_right() noexcept {
+	move_horizontal_offset(-biv::MapMovable::MAP_STEP);
+}
+
+void Mario::process_horizontal_static_collision(Rect* obj) noexcept {
+	hspeed = -hspeed;
+	move_horizontally();
+}
+
+void Mario::process_mario_collision(Collisionable* mario) noexcept {}
+
+void Mario::process_vertical_static_collision(Rect* obj) noexcept {
+	if (vspeed > 0) {
+		// Марио упал на корабль.
+		top_left.y -= vspeed;
+	} else if (vspeed < 0) {
+		// Марио ударился головой о полку и после этого должен падать вниз.
+		top_left.y -= vspeed;
+	}
+	vspeed = 0;
+}
+<
+=== / src/objects/mario.cpp ===
+=== src/objects/mario.hpp ===
+<#pragma once
+
+#include "collisionable.hpp"
+#include "movable.hpp"
+#include "rect.hpp"
+#include "speed.hpp"
+
+namespace biv {
+	class Mario : public Movable, public Collisionable {
+		public:
+			Mario(const Coord& top_left, const int width, const int height);
+
+			Rect get_rect() const noexcept override;
+			Speed get_speed() const noexcept override;
+			
+			void move_map_left() noexcept;
+			void move_map_right() noexcept;
+
+			void process_horizontal_static_collision(Rect*) noexcept override;
+			void process_mario_collision(Collisionable*) noexcept override;
+			void process_vertical_static_collision(Rect*) noexcept override;
+	};
+}
+<
+=== / src/objects/mario.hpp ===
+=== src/objects/money.cpp ===
+<#include "money.hpp"
+
+#include "map_movable.hpp"
+
+using biv::Money;
+
+Money::Money(const Coord& top_left, const int width, const int height) 
+	: RectMapMovableAdapter(top_left, width, height) {
+	vspeed = 0;
+	hspeed = 0.2;
+}
+
+biv::Rect Money::get_rect() const noexcept {
+	return {top_left, width, height};
+}
+
+biv::Speed Money::get_speed() const noexcept {
+	return {vspeed, hspeed};
+}
+
+void Money::process_horizontal_static_collision(Rect* obj) noexcept {
+	hspeed = -hspeed;
+	move_horizontally();
+}
+
+void Money::process_mario_collision(Collisionable* mario) noexcept {
+	kill();
+}
+
+void Money::process_vertical_static_collision(Rect* obj) noexcept {
+	// Деньги могут свалиться с корабля: Кто не поймал, тот не успел. 
+	
+	// Особенность модели вертикального передвижения в игре.
+	if (vspeed > 0) {
+		top_left.y -= vspeed;
+		vspeed = 0;
+	}
+}
+<
+=== / src/objects/money.cpp ===
+=== src/objects/money.hpp ===
+<#pragma once
+
+#include "collisionable.hpp"
+#include "movable.hpp"
+#include "rect.hpp"
+#include "rect_map_movable_adapter.hpp"
+#include "speed.hpp"
+
+namespace biv {
+	class Money : public RectMapMovableAdapter, public Movable, public Collisionable {
+		public:
+			Money(const Coord& top_left, const int width, const int height);
+
+			Rect get_rect() const noexcept override;
+			Speed get_speed() const noexcept override;
+
+			void process_horizontal_static_collision(Rect*) noexcept override;
+			void process_mario_collision(Collisionable*) noexcept override;
+			void process_vertical_static_collision(Rect*) noexcept override;
+	};
+}
+<
+=== / src/objects/money.hpp ===
+=== src/objects/ship.hpp ===
+<#pragma once
+
+#include "rect_map_movable_adapter.hpp"
+
+namespace biv {
+	class Ship : public RectMapMovableAdapter {
+		public:
+			Ship(
+				const Coord& top_left, const int width, const int height
+			) : RectMapMovableAdapter(top_left, width, height) {}
+	};
+}
+<
+=== / src/objects/ship.hpp ===
+=== src/os_controls/CMakeLists.txt ===
+<add_subdirectory(os_api)
+add_subdirectory(windows)
+<
+=== / src/os_controls/CMakeLists.txt ===
+=== src/os_controls/os_api/CMakeLists.txt ===
+<target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/os_controls/os_api/CMakeLists.txt ===
+=== src/os_controls/os_api/os_control_settings.hpp ===
+<#pragma once
+
+namespace biv {
+	namespace os {
+		void init_settings();
+		void set_cursor_start_position();
+	}
+}
+<
+=== / src/os_controls/os_api/os_control_settings.hpp ===
+=== src/os_controls/os_api/user_input.hpp ===
+<#pragma once
+
+namespace biv {
+	namespace os {
+		enum class UserInput {
+			EXIT,
+			MAP_LEFT,
+			MAP_RIGHT,
+			MARIO_JUMP,
+			NO_INPUT
+		};
+	
+		UserInput get_user_input();
+	}
+}
+<
+=== / src/os_controls/os_api/user_input.hpp ===
+=== src/os_controls/windows/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		os_control_settings.cpp
+		user_input.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/os_controls/windows/CMakeLists.txt ===
+=== src/os_controls/windows/os_control_settings.cpp ===
+<#include "os_control_settings.hpp"
+
+#include <windows.h>
+
+void biv::os::init_settings() {
+	void* handle = GetStdHandle(STD_OUTPUT_HANDLE);
+	CONSOLE_CURSOR_INFO structCursorInfo;
+	GetConsoleCursorInfo(handle, &structCursorInfo);
+	structCursorInfo.bVisible = FALSE;
+	SetConsoleCursorInfo(handle, &structCursorInfo);
+}
+
+void biv::os::set_cursor_start_position() {
+	COORD coord;
+	coord.X = 0;
+	coord.Y = 0;
+	SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+}
+<
+=== / src/os_controls/windows/os_control_settings.cpp ===
+=== src/os_controls/windows/user_input.cpp ===
+<#include "user_input.hpp"
+
+#include <windows.h>
+
+using biv::os::UserInput;
+
+UserInput biv::os::get_user_input() {
+	if (GetKeyState('A') < 0) {
+		return UserInput::MAP_RIGHT;
+	} else if (GetKeyState('D') < 0) {
+		return UserInput::MAP_LEFT;
+	} else if (GetKeyState(VK_SPACE) < 0) {
+		return UserInput::MARIO_JUMP;
+	} else if (GetKeyState(VK_ESCAPE) < 0) {
+		return UserInput::EXIT;
+	} else {
+		return UserInput::NO_INPUT;
+	}
+}
+<
+=== / src/os_controls/windows/user_input.cpp ===
+=== src/ui/CMakeLists.txt ===
+<add_subdirectory(console)
+add_subdirectory(qt)<
+=== / src/ui/CMakeLists.txt ===
+=== src/ui/console/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		console_game_map.cpp
+		console_ui_factory.cpp
+		console_ui_obj_rect_adapter.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+add_subdirectory(ui_objects)
+<
+=== / src/ui/console/CMakeLists.txt ===
+=== src/ui/console/console_game_map.cpp ===
+<#include "console_game_map.hpp"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <windows.h>
+#include <os_control_settings.hpp>
+
+using biv::ConsoleGameMap;
+
+ConsoleGameMap::ConsoleGameMap(const int height, const int width) 
+	: GameMap(height, width) {
+
+	map = new char*[height];
+	for (int i = 0; i < height; i++) {
+		map[i] = new char[width + 1];
+		memset(map[i], ' ', width);
+		map[i][width] = '\0';
+	}
+		 
+	clear();
+}
+
+ConsoleGameMap::~ConsoleGameMap() {
+	for (int i = 0; i < height; i++) {
+		delete [] map[i];
+	}
+	delete [] map;
+}
+
+void ConsoleGameMap::add_obj(ConsoleUIObject* obj) {
+	objs.push_back(obj);
+}
+
+void ConsoleGameMap::clear() noexcept {
+    for (int i = 0; i < width; i++) {
+        map[0][i] = ' ';
+    }
+    map[0][width] = '\0';
+    for (int j = 1; j < height; j++) {
+        std::copy(map[0], map[0] + width + 1, map[j]);
+    }
+}
+
+void ConsoleGameMap::refresh() noexcept {
+	clear();
+
+	// Воздух
+	std::fill(map[0], map[0] + width, ' ');
+	map[0][width] = '\0';
+
+	for (int i = 1; i < height - 3; i++) {
+		std::copy(map[0], map[0] + width + 1, map[i]);
+	}
+
+	// Вода
+	std::fill(map[height - 3], map[height - 3] + width, '~');
+	map[height - 3][width] = '\0';
+
+	for (int i = height - 2; i < height; i++) {
+		std::copy(map[height - 3], map[height - 3] + width + 1, map[i]);
+	}
+	
+	// Объекты карты
+	for (ConsoleUIObject* obj: objs) {
+		int left = obj->get_left();
+		int top = obj->get_top();
+		int right = obj->get_right();
+		int bottom = obj->get_bottom();
+		
+		char brush = obj->get_brush();
+		
+		for (int i = left; i < right; i++) {
+			for (int j = top; j < bottom; j++) {
+				if (is_on_map(i, j)) {
+					map[j][i] = brush;
+				}
+			}
+		}
+	}
+}
+
+void ConsoleGameMap::remove_obj(ConsoleUIObject* obj) {
+	objs.erase(std::remove(objs.begin(), objs.end(), obj), objs.end());
+}
+
+void ConsoleGameMap::remove_objs() {
+	objs.clear();
+}
+
+void ConsoleGameMap::show() const noexcept {
+	biv::os::set_cursor_start_position();
+
+	char* buffer = new char[height * (width + 2)];
+	int pos = 0;
+	
+	for (int i = 0; i < height; i++) {
+		//std::memcpy(buffer + pos, map[i], width);
+		strcpy_s(buffer + pos, width + 1, map[i]);
+		pos += width;
+		buffer[pos++] = '\n';
+	}
+	buffer[pos] = '\0';
+	
+	// Вывод всего буфера одним вызовом
+	std::cout << buffer << std::flush;
+	delete[] buffer;
+}
+<
+=== / src/ui/console/console_game_map.cpp ===
+=== src/ui/console/console_game_map.hpp ===
+<#pragma once
+
+#include <vector>
+
+#include "game_map.hpp"
+#include "console_ui_obj.hpp"
+
+namespace biv {
+	class ConsoleGameMap : public GameMap {
+		private:
+			char** map;
+			
+			std::vector<ConsoleUIObject*> objs;
+			
+		public:
+			ConsoleGameMap(const int height, const int width);
+			~ConsoleGameMap();
+			
+			void add_obj(ConsoleUIObject*);
+			void clear() noexcept override;
+			void refresh() noexcept override;
+			void remove_obj(ConsoleUIObject*);
+			void remove_objs() override;
+			void show() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/console_game_map.hpp ===
+=== src/ui/console/console_ui_factory.cpp ===
+<#include "console_ui_factory.hpp"
+
+using biv::ConsoleUIFactory;
+
+ConsoleUIFactory::ConsoleUIFactory(Game* game) : UIFactory(game) {
+	create_game_map();
+}
+
+void ConsoleUIFactory::clear_data() {
+	game->remove_objs();
+	game_map->remove_objs();
+	delete mario;
+	mario = nullptr;
+	boxes.clear();
+	full_boxes.clear();
+	ships.clear();
+	enemies.clear();
+	flying_enemies.clear();
+	jumping_enemies.clear();
+	moneys.clear();
+}
+
+void ConsoleUIFactory::create_box(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleBox* box = new ConsoleBox(top_left, width, height);
+	boxes.push_back(box);
+	game->add_map_movable(box);
+	game->add_static_obj(box);
+	game_map->add_obj(box);
+}
+
+void ConsoleUIFactory::create_enemy(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleEnemy* enemy = new ConsoleEnemy(top_left, width, height);
+	enemies.push_back(enemy);
+	game->add_map_movable(enemy);
+	game->add_movable(enemy);
+	game->add_collisionable(enemy);
+	game_map->add_obj(enemy);
+}
+
+void ConsoleUIFactory::create_flying_enemy(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleFlyingEnemy* flying_enemy = new ConsoleFlyingEnemy(top_left, width, height);
+	flying_enemies.push_back(flying_enemy);
+	game->add_map_movable(flying_enemy);
+	game->add_movable(flying_enemy);
+	game->add_collisionable(flying_enemy);
+	game_map->add_obj(flying_enemy);
+}
+
+void ConsoleUIFactory::create_full_box(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleFullBox* full_box = new ConsoleFullBox(top_left, width, height, this);
+	full_boxes.push_back(full_box);
+	game->add_collisionable(full_box);
+	game->add_map_movable(full_box);
+	game->add_static_obj(full_box);
+	game_map->add_obj(full_box);
+}
+
+void ConsoleUIFactory::create_jumping_enemy(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleJumpingEnemy* jumping_enemy = new ConsoleJumpingEnemy(top_left, width, height);
+	jumping_enemies.push_back(jumping_enemy);
+	game->add_map_movable(jumping_enemy);
+	game->add_movable(jumping_enemy);
+	game->add_collisionable(jumping_enemy);
+	game_map->add_obj(jumping_enemy);
+}
+
+void ConsoleUIFactory::create_mario(
+	const Coord& top_left, const int width, const int height
+) {
+	game->remove_collisionable(mario);
+	game->remove_movable(mario);
+	game->remove_mario();
+	game_map->remove_obj(mario);
+	delete mario;
+	mario = nullptr;
+	
+	mario = new ConsoleMario(top_left, width, height);
+	game->add_collisionable(mario);
+	game->add_movable(mario);
+	game->add_mario(mario);
+	game_map->add_obj(mario);
+}
+
+void ConsoleUIFactory::create_money(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleMoney* money = new ConsoleMoney(top_left, width, height);
+	moneys.push_back(money);
+	game->add_map_movable(money);
+	game->add_movable(money);
+	game->add_collisionable(money);
+	game_map->add_obj(money);
+}
+
+void ConsoleUIFactory::create_ship(
+	const Coord& top_left, const int width, const int height
+) {
+	ConsoleShip* ship = new ConsoleShip(top_left, width, height);
+	ships.push_back(ship);
+	game->add_map_movable(ship);
+	game->add_static_obj(ship);
+	game_map->add_obj(ship);
+}
+
+biv::GameMap* ConsoleUIFactory::get_game_map() {
+	return game_map;
+}
+
+biv::Mario* ConsoleUIFactory::get_mario() {
+	return mario;
+}
+
+// ----------------------------------------------------------------------------
+// 									PRIVATE
+// ----------------------------------------------------------------------------
+void ConsoleUIFactory::create_game_map() {
+	game_map = new ConsoleGameMap(30, 200);
+}
+<
+=== / src/ui/console/console_ui_factory.cpp ===
+=== src/ui/console/console_ui_factory.hpp ===
+<#pragma once
+
+#include "console_box.hpp"
+#include "console_enemy.hpp"
+#include "console_flying_enemy.hpp"
+#include "console_full_box.hpp"
+#include "console_jumping_enemy.hpp"
+#include "console_game_map.hpp"
+#include "console_mario.hpp"
+#include "console_money.hpp"
+#include "console_ship.hpp"
+#include "ui_factory.hpp"
+
+namespace biv {
+	class ConsoleUIFactory : public UIFactory {
+		private:
+			ConsoleGameMap* game_map = nullptr;
+			std::vector<ConsoleBox*> boxes;
+			std::vector<ConsoleFullBox*> full_boxes;
+			std::vector<ConsoleShip*> ships;
+			ConsoleMario* mario = nullptr;
+			std::vector<ConsoleEnemy*> enemies;
+			std::vector<ConsoleFlyingEnemy*> flying_enemies;
+			std::vector<ConsoleJumpingEnemy*> jumping_enemies;
+			std::vector<ConsoleMoney*> moneys;
+
+		public:
+			ConsoleUIFactory(Game* game);
+			
+			void clear_data() override;
+			void create_box(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_enemy(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_flying_enemy(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_full_box(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_jumping_enemy(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_mario(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_money(
+				const Coord& top_left, const int width, const int height
+			) override;
+			void create_ship(
+				const Coord& top_left, const int width, const int height
+			) override;
+			GameMap* get_game_map() override;
+			Mario* get_mario() override;
+			
+		private:
+			virtual void create_game_map() override;
+	};
+}
+<
+=== / src/ui/console/console_ui_factory.hpp ===
+=== src/ui/console/console_ui_obj.hpp ===
+<#pragma once
+
+#include "rect.hpp"
+
+namespace biv {
+	class ConsoleUIObject {
+		public:
+			virtual int get_bottom() const noexcept = 0;
+			virtual char get_brush() const noexcept = 0;
+			virtual int get_height() const noexcept = 0;
+			virtual int get_left() const noexcept = 0;
+			virtual int get_right() const noexcept = 0;
+			virtual int get_top() const noexcept = 0;
+	};
+}
+<
+=== / src/ui/console/console_ui_obj.hpp ===
+=== src/ui/console/console_ui_obj_rect_adapter.cpp ===
+<#include "console_ui_obj_rect_adapter.hpp"
+
+using biv::ConsoleUIObjectRectAdapter;
+
+ConsoleUIObjectRectAdapter::ConsoleUIObjectRectAdapter(
+	const Coord& top_left, const int width, const int height
+) {
+	this->top_left = top_left;
+	this->width = width;
+	this->height = height;
+}
+
+int ConsoleUIObjectRectAdapter::get_bottom() const noexcept {
+	return Rect::get_bottom();
+}
+
+int ConsoleUIObjectRectAdapter::get_height() const noexcept {
+	return Rect::get_height();
+}
+
+int ConsoleUIObjectRectAdapter::get_left() const noexcept {
+	return Rect::get_left();
+}
+
+int ConsoleUIObjectRectAdapter::get_right() const noexcept {
+	return Rect::get_right();
+}
+
+int ConsoleUIObjectRectAdapter::get_top() const noexcept {
+	return Rect::get_top();
+}<
+=== / src/ui/console/console_ui_obj_rect_adapter.cpp ===
+=== src/ui/console/console_ui_obj_rect_adapter.hpp ===
+<#pragma once
+
+#include "console_ui_obj.hpp"
+#include "rect.hpp"
+
+namespace biv {
+	class ConsoleUIObjectRectAdapter : virtual public Rect, public ConsoleUIObject {
+		public:
+			ConsoleUIObjectRectAdapter() = default;
+			ConsoleUIObjectRectAdapter(
+				const Coord& top_left, const int width, const int height
+			);
+		
+			int get_bottom() const noexcept override;
+			int get_height() const noexcept override;
+			int get_left() const noexcept override;
+			int get_right() const noexcept override;
+			int get_top() const noexcept override;
+			
+			virtual char get_brush() const noexcept = 0;
+	};
+}
+<
+=== / src/ui/console/console_ui_obj_rect_adapter.hpp ===
+=== src/ui/console/ui_objects/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+	PRIVATE
+		console_box.cpp
+		console_enemy.cpp
+		console_flying_enemy.cpp
+		console_full_box.cpp
+		console_jumping_enemy.cpp
+		console_mario.cpp
+		console_money.cpp
+		console_ship.cpp
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+<
+=== / src/ui/console/ui_objects/CMakeLists.txt ===
+=== src/ui/console/ui_objects/console_box.cpp ===
+<#include "console_box.hpp"
+
+using biv::ConsoleBox;
+
+ConsoleBox::ConsoleBox(const Coord& top_left, const int width, const int height) 
+	: Box(top_left, width, height) {}
+
+char ConsoleBox::get_brush() const noexcept {
+	return '-';
+}
+<
+=== / src/ui/console/ui_objects/console_box.cpp ===
+=== src/ui/console/ui_objects/console_box.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "box.hpp"
+
+namespace biv {
+	class ConsoleBox : public Box, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleBox(const Coord& top_left, const int width, const int height);
+			
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_box.hpp ===
+=== src/ui/console/ui_objects/console_enemy.cpp ===
+<#include "console_enemy.hpp"
+
+using biv::ConsoleEnemy;
+
+ConsoleEnemy::ConsoleEnemy(const Coord& top_left, const int width, const int height) 
+	: Enemy(top_left, width, height) {}
+
+char ConsoleEnemy::get_brush() const noexcept {
+	return 'e';
+}
+<
+=== / src/ui/console/ui_objects/console_enemy.cpp ===
+=== src/ui/console/ui_objects/console_enemy.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "enemy.hpp"
+
+namespace biv {
+	class ConsoleEnemy : public Enemy, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleEnemy(const Coord& top_left, const int width, const int height);
+
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_enemy.hpp ===
+=== src/ui/console/ui_objects/console_flying_enemy.cpp ===
+<#include "console_flying_enemy.hpp"
+
+using biv::ConsoleFlyingEnemy;
+
+ConsoleFlyingEnemy::ConsoleFlyingEnemy(const Coord& top_left, const int width, const int height) 
+	: FlyingEnemy(top_left, width, height) {}
+
+char ConsoleFlyingEnemy::get_brush() const noexcept {
+	return 'f';
+}
+<
+=== / src/ui/console/ui_objects/console_flying_enemy.cpp ===
+=== src/ui/console/ui_objects/console_flying_enemy.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "flying_enemy.hpp"
+
+namespace biv {
+	class ConsoleFlyingEnemy : public FlyingEnemy, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleFlyingEnemy(const Coord& top_left, const int width, const int height);
+
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_flying_enemy.hpp ===
+=== src/ui/console/ui_objects/console_full_box.cpp ===
+<#include "console_full_box.hpp"
+
+using biv::ConsoleFullBox;
+
+ConsoleFullBox::ConsoleFullBox(
+	const Coord& top_left, 
+	const int width, const int height,
+	UIFactory* ui_factory
+) : FullBox(top_left, width, height, ui_factory) {}
+
+char ConsoleFullBox::get_brush() const noexcept {
+	if (is_active_) {
+		return '?';
+	} else {
+		return '-';
+	}
+}
+<
+=== / src/ui/console/ui_objects/console_full_box.cpp ===
+=== src/ui/console/ui_objects/console_full_box.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "full_box.hpp"
+
+namespace biv {
+	class ConsoleFullBox : public FullBox, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleFullBox(
+				const Coord& top_left, 
+				const int width, const int height,
+				UIFactory* ui_factory
+			);
+			
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_full_box.hpp ===
+=== src/ui/console/ui_objects/console_jumping_enemy.cpp ===
+<#include "console_jumping_enemy.hpp"
+
+using biv::ConsoleJumpingEnemy;
+
+ConsoleJumpingEnemy::ConsoleJumpingEnemy(const Coord& top_left, const int width, const int height) 
+	: JumpingEnemy(top_left, width, height) {}
+
+char ConsoleJumpingEnemy::get_brush() const noexcept {
+	return 'j';
+}
+<
+=== / src/ui/console/ui_objects/console_jumping_enemy.cpp ===
+=== src/ui/console/ui_objects/console_jumping_enemy.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "jumping_enemy.hpp"
+
+namespace biv {
+	class ConsoleJumpingEnemy : public JumpingEnemy, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleJumpingEnemy(const Coord& top_left, const int width, const int height);
+
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_jumping_enemy.hpp ===
+=== src/ui/console/ui_objects/console_mario.cpp ===
+<#include "console_mario.hpp"
+
+using biv::ConsoleMario;
+
+ConsoleMario::ConsoleMario(const Coord& top_left, const int width, const int height) 
+	: Mario(top_left, width, height) {}
+
+char ConsoleMario::get_brush() const noexcept {
+	return '@';
+}
+<
+=== / src/ui/console/ui_objects/console_mario.cpp ===
+=== src/ui/console/ui_objects/console_mario.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "mario.hpp"
+
+namespace biv {
+	class ConsoleMario : public Mario, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleMario(const Coord& top_left, const int width, const int height);
+
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_mario.hpp ===
+=== src/ui/console/ui_objects/console_money.cpp ===
+<#include "console_money.hpp"
+
+using biv::ConsoleMoney;
+
+ConsoleMoney::ConsoleMoney(const Coord& top_left, const int width, const int height) 
+	: Money(top_left, width, height) {}
+
+char ConsoleMoney::get_brush() const noexcept {
+	return '$';
+}
+<
+=== / src/ui/console/ui_objects/console_money.cpp ===
+=== src/ui/console/ui_objects/console_money.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "money.hpp"
+
+namespace biv {
+	class ConsoleMoney : public Money, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleMoney(const Coord& top_left, const int width, const int height);
+
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_money.hpp ===
+=== src/ui/console/ui_objects/console_ship.cpp ===
+<#include "console_ship.hpp"
+
+using biv::ConsoleShip;
+
+ConsoleShip::ConsoleShip(const Coord& top_left, const int width, const int height) 
+	: Ship(top_left, width, height) {}
+
+char ConsoleShip::get_brush() const noexcept {
+	return '#';
+}
+<
+=== / src/ui/console/ui_objects/console_ship.cpp ===
+=== src/ui/console/ui_objects/console_ship.hpp ===
+<#pragma once
+
+#include "console_ui_obj_rect_adapter.hpp"
+#include "ship.hpp"
+
+namespace biv {
+	class ConsoleShip : public Ship, public ConsoleUIObjectRectAdapter {
+		public:
+			ConsoleShip(const Coord& top_left, const int width, const int height);
+			
+			char get_brush() const noexcept override;
+	};
+}
+<
+=== / src/ui/console/ui_objects/console_ship.hpp ===
+=== src/ui/qt/CMakeLists.txt ===
+<find_package(Qt6 COMPONENTS Widgets REQUIRED)
+
+target_sources(${PROJECT_NAME}
+    PRIVATE
+        
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+add_subdirectory(ui_objects)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets)<
+=== / src/ui/qt/CMakeLists.txt ===
+=== src/ui/qt/ui_objects/CMakeLists.txt ===
+<target_sources(${PROJECT_NAME}
+    PRIVATE
+        
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)<
+=== / src/ui/qt/ui_objects/CMakeLists.txt ===
